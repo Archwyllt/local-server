@@ -10,6 +10,8 @@ export type DBConfig = {
 export type APIConfig = {
   fileserverHits: number;
   db: DBConfig;
+  platform: string;
+  jwtSecret: string;
 };
 
 function envOrThrow(key: string): string {
@@ -28,4 +30,6 @@ export const config: APIConfig = {
       migrationsFolder: "./src/db/migrations",
     },
   },
+  platform: envOrThrow("PLATFORM"),
+  jwtSecret: envOrThrow("JWT_SECRET"),
 };
