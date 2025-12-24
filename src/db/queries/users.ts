@@ -30,6 +30,19 @@ export async function getUserByEmail(email: string) {
 }
 
 /**
+ * Retrieves a user by ID
+ * @param userId - User ID to search for
+ * @returns The user record, or undefined if not found
+ */
+export async function getUserById(userId: string) {
+  const [result] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, userId));
+  return result;
+}
+
+/**
  * Updates a user's email and password
  * @param userId - User ID to update
  * @param email - New email address
@@ -42,6 +55,23 @@ export async function updateUser(userId: string, email: string, hashedPassword: 
     .set({
       email,
       hashedPassword,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, userId))
+    .returning();
+  return result;
+}
+
+/**
+ * Upgrades a user to Chirpy Red membership
+ * @param userId - User ID to upgrade
+ * @returns Updated user record, or undefined if not found
+ */
+export async function upgradeUserToChirpyRed(userId: string) {
+  const [result] = await db
+    .update(users)
+    .set({
+      isChirpyRed: true,
       updatedAt: new Date(),
     })
     .where(eq(users.id, userId))

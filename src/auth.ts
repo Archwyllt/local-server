@@ -96,3 +96,25 @@ export function getBearerToken(req: Request): string {
 
   return parts[1];
 }
+
+/**
+ * Extracts API key from Authorization header
+ * @param req - Express request object
+ * @returns API key string without "ApiKey " prefix
+ * @throws UnauthorizedError if Authorization header is missing or invalid
+ */
+export function getAPIKey(req: Request): string {
+  const authHeader = req.get("Authorization");
+
+  if (!authHeader) {
+    throw new UnauthorizedError("Authorization header missing");
+  }
+
+  const parts = authHeader.split(" ");
+
+  if (parts.length !== 2 || parts[0] !== "ApiKey") {
+    throw new UnauthorizedError("Invalid Authorization header format");
+  }
+
+  return parts[1];
+}

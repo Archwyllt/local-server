@@ -17,9 +17,19 @@ export async function createChirp(chirp: NewChirp) {
 
 /**
  * Retrieves all chirps from the database ordered by creation date
- * @returns Array of all chirps, oldest first
+ * @param authorId - Optional author ID to filter by
+ * @returns Array of chirps, oldest first
  */
-export async function getAllChirps() {
+export async function getAllChirps(authorId?: string) {
+  if (authorId) {
+    const results = await db
+      .select()
+      .from(chirps)
+      .where(eq(chirps.userId, authorId))
+      .orderBy(asc(chirps.createdAt));
+    return results;
+  }
+
   const results = await db
     .select()
     .from(chirps)
@@ -28,15 +38,28 @@ export async function getAllChirps() {
 }
 
 /**
- * Retrieves a single chirp by its ID
- * @param id - The chirp ID to look up
- * @returns The chirp if found, undefined otherwise
+ * Retrieves a chirp by ID
+ * @param chirpId - Chirp ID to search for
+ * @returns The chirp record, or undefined if not found
  */
-export async function getChirpById(id: string) {
+export async function getChirpById(chirpId: string) {
   const [result] = await db
     .select()
     .from(chirps)
-    .where(eq(chirps.id, id));
+    .where(eq(chirps.id, chirpId));
+  return result;
+}
+
+/**
+ * Deletes a chirp by ID
+ * @param chirpId - Chirp ID to delete
+ * @returns Deleted chirp record, or undefined if not found
+ */
+export async function deleteChirp(chirpId: string) {
+  const [result] = await db
+    .delete(chirps)
+    .where(eq(chirps.id, chirpId))
+    .returning();
   return result;
 }
 

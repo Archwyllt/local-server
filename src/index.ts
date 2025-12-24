@@ -4,10 +4,10 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { config } from "./config.js";
 import { BadRequestError, UnauthorizedError, ForbiddenError, NotFoundError } from "./errors.js";
-import { createUser, getUserByEmail, updateUser, deleteAllUsers } from "./db/queries/users.js";
-import { createChirp, getAllChirps, deleteAllChirps } from "./db/queries/chirps.js";
+import { createUser, getUserByEmail, getUserById, updateUser, upgradeUserToChirpyRed, deleteAllUsers } from "./db/queries/users.js";
+import { createChirp, getAllChirps, getChirpById, deleteChirp, deleteAllChirps } from "./db/queries/chirps.js";
 import { createRefreshToken, getUserFromRefreshToken, revokeRefreshToken, deleteAllRefreshTokens } from "./db/queries/refreshTokens.js";
-import { hashPassword, checkPasswordHash, makeJWT, makeRefreshToken, validateJWT, getBearerToken } from "./auth.js";
+import { hashPassword, checkPasswordHash, makeJWT, makeRefreshToken, validateJWT, getBearerToken, getAPIKey } from "./auth.js";
 import { UserResponse } from "./db/schema.js";
 
 const migrationClient = postgres(config.db.url, { max: 1 });
@@ -41,6 +41,15 @@ app.post("/api/chirps", (req, res, next) => {
 });
 app.get("/api/chirps", (req, res, next) => {
   Promise.resolve(handlerGetChirps(req, res)).catch(next);
+});
+app.get("/api/chirps/:chirpID", (req, res, next) => {
+  Promise.resolve(handlerGetChirp(req, res)).catch(next);
+});
+app.delete("/api/chirps/:chirpID", (req, res, next) => {
+  Promise.resolve(handlerDeleteChirp(req, res)).catch(next);
+});
+app.post("/api/polka/webhooks", (req, res, next) => {
+  Promise.resolve(handlerPolkaWebhook(req, res)).catch(next);
 });
 app.get("/admin/metrics", handlerMetrics);
 app.post("/admin/reset", (req, res, next) => {
@@ -116,6 +125,7 @@ function formatUserResponse(user: UserResponse): object {
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
     email: user.email,
+    isChirpyRed: user.isChirpyRed,
   };
 }
 
@@ -334,10 +344,14 @@ async function handlerCreateChirp(req: Request, res: Response): Promise<void> {
 
 /**
  * Get all chirps endpoint handler
- * Returns all chirps ordered by creation date (oldest first)
+ * Returns all chirps ordered by creation date
+ * Optionally filters by author ID and sorts using query parameters
  */
 async function handlerGetChirps(req: Request, res: Response): Promise<void> {
-  const chirps = await getAllChirps();
+  const authorId = req.query.authorId as string | undefined;
+  const sort = req.query.sort as string | undefined;
+
+  const chirps = await getAllChirps(authorId);
 
   const formattedChirps = chirps.map((chirp) => ({
     id: chirp.id,
@@ -347,7 +361,109 @@ async function handlerGetChirps(req: Request, res: Response): Promise<void> {
     userId: chirp.userId,
   }));
 
+  if (sort === "desc") {
+    formattedChirps.sort((a, b) => {
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  } else {
+    formattedChirps.sort((a, b) => {
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+  }
+
   res.status(200).json(formattedChirps);
+}
+
+/**
+ * Get single chirp endpoint handler
+ * Returns a chirp by ID
+ */
+async function handlerGetChirp(req: Request, res: Response): Promise<void> {
+  const chirpId = req.params.chirpID;
+
+  const chirp = await getChirpById(chirpId);
+
+  if (!chirp) {
+    throw new NotFoundError("Chirp not found");
+  }
+
+  res.status(200).json({
+    id: chirp.id,
+    createdAt: chirp.createdAt.toISOString(),
+    updatedAt: chirp.updatedAt.toISOString(),
+    body: chirp.body,
+    userId: chirp.userId,
+  });
+}
+
+/**
+ * Delete chirp endpoint handler
+ * Requires JWT authentication
+ * Only allows deletion if user is the author
+ */
+async function handlerDeleteChirp(req: Request, res: Response): Promise<void> {
+  const token = getBearerToken(req);
+  const userId = validateJWT(token, config.jwtSecret);
+
+  const chirpId = req.params.chirpID;
+
+  const chirp = await getChirpById(chirpId);
+
+  if (!chirp) {
+    throw new NotFoundError("Chirp not found");
+  }
+
+  if (chirp.userId !== userId) {
+    throw new ForbiddenError("You are not authorized to delete this chirp");
+  }
+
+  await deleteChirp(chirpId);
+
+  res.status(204).send();
+}
+
+/**
+ * Polka webhook handler
+ * Receives payment events and upgrades users to Chirpy Red
+ * Requires valid API key authentication
+ */
+async function handlerPolkaWebhook(req: Request, res: Response): Promise<void> {
+  const apiKey = getAPIKey(req);
+
+  if (apiKey !== config.polkaKey) {
+    throw new UnauthorizedError("Invalid API key");
+  }
+
+  let body = "";
+
+  req.on("data", (chunk) => {
+    body += chunk;
+  });
+
+  await new Promise<void>((resolve) => {
+    req.on("end", () => resolve());
+  });
+
+  const parsedBody = JSON.parse(body);
+
+  if (parsedBody.event !== "user.upgraded") {
+    res.status(204).send();
+    return;
+  }
+
+  const userId = parsedBody.data?.userId;
+
+  if (!userId || typeof userId !== "string") {
+    throw new BadRequestError("Invalid user ID");
+  }
+
+  const user = await upgradeUserToChirpyRed(userId);
+
+  if (!user) {
+    throw new NotFoundError("User not found");
+  }
+
+  res.status(204).send();
 }
 
 /**
