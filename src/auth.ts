@@ -1,6 +1,8 @@
 import argon2 from "argon2";
 import jwt, { JwtPayload } from "jsonwebtoken";
+import crypto from "crypto";
 import { Request } from "express";
+import { UnauthorizedError } from "./errors.js";
 
 /**
  * Hashes a password using Argon2
@@ -49,35 +51,47 @@ export function makeJWT(userID: string, expiresIn: number, secret: string): stri
  * @param tokenString - JWT to validate
  * @param secret - Secret key used to sign the token
  * @returns User ID from the token
- * @throws Error if token is invalid or expired
+ * @throws UnauthorizedError if token is invalid or expired
  */
 export function validateJWT(tokenString: string, secret: string): string {
-  const decoded = jwt.verify(tokenString, secret) as JwtPayload;
+  try {
+    const decoded = jwt.verify(tokenString, secret) as JwtPayload;
 
-  if (!decoded.sub || typeof decoded.sub !== "string") {
-    throw new Error("Invalid token: missing or invalid subject");
+    if (!decoded.sub || typeof decoded.sub !== "string") {
+      throw new UnauthorizedError("Invalid token: missing or invalid subject");
+    }
+
+    return decoded.sub;
+  } catch (error) {
+    throw new UnauthorizedError("Invalid or expired token");
   }
+}
 
-  return decoded.sub;
+/**
+ * Generates a random refresh token
+ * @returns 256-bit hex-encoded random string
+ */
+export function makeRefreshToken(): string {
+  return crypto.randomBytes(32).toString("hex");
 }
 
 /**
  * Extracts bearer token from Authorization header
  * @param req - Express request object
  * @returns Token string without "Bearer " prefix
- * @throws Error if Authorization header is missing or invalid
+ * @throws UnauthorizedError if Authorization header is missing or invalid
  */
 export function getBearerToken(req: Request): string {
   const authHeader = req.get("Authorization");
 
   if (!authHeader) {
-    throw new Error("Authorization header missing");
+    throw new UnauthorizedError("Authorization header missing");
   }
 
   const parts = authHeader.split(" ");
 
   if (parts.length !== 2 || parts[0] !== "Bearer") {
-    throw new Error("Invalid Authorization header format");
+    throw new UnauthorizedError("Invalid Authorization header format");
   }
 
   return parts[1];

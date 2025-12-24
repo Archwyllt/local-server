@@ -30,6 +30,26 @@ export async function getUserByEmail(email: string) {
 }
 
 /**
+ * Updates a user's email and password
+ * @param userId - User ID to update
+ * @param email - New email address
+ * @param hashedPassword - New hashed password
+ * @returns Updated user record
+ */
+export async function updateUser(userId: string, email: string, hashedPassword: string) {
+  const [result] = await db
+    .update(users)
+    .set({
+      email,
+      hashedPassword,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, userId))
+    .returning();
+  return result;
+}
+
+/**
  * Deletes all users from the database
  * @returns Number of users deleted
  */

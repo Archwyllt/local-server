@@ -4,9 +4,10 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { config } from "./config.js";
 import { BadRequestError, UnauthorizedError, ForbiddenError, NotFoundError } from "./errors.js";
-import { createUser, getUserByEmail, deleteAllUsers } from "./db/queries/users.js";
+import { createUser, getUserByEmail, updateUser, deleteAllUsers } from "./db/queries/users.js";
 import { createChirp, getAllChirps, deleteAllChirps } from "./db/queries/chirps.js";
-import { hashPassword, checkPasswordHash, makeJWT, validateJWT, getBearerToken } from "./auth.js";
+import { createRefreshToken, getUserFromRefreshToken, revokeRefreshToken, deleteAllRefreshTokens } from "./db/queries/refreshTokens.js";
+import { hashPassword, checkPasswordHash, makeJWT, makeRefreshToken, validateJWT, getBearerToken } from "./auth.js";
 import { UserResponse } from "./db/schema.js";
 
 const migrationClient = postgres(config.db.url, { max: 1 });
@@ -23,8 +24,17 @@ app.get("/api/healthz", handlerReadiness);
 app.post("/api/users", (req, res, next) => {
   Promise.resolve(handlerCreateUser(req, res)).catch(next);
 });
+app.put("/api/users", (req, res, next) => {
+  Promise.resolve(handlerUpdateUser(req, res)).catch(next);
+});
 app.post("/api/login", (req, res, next) => {
   Promise.resolve(handlerLogin(req, res)).catch(next);
+});
+app.post("/api/refresh", (req, res, next) => {
+  Promise.resolve(handlerRefresh(req, res)).catch(next);
+});
+app.post("/api/revoke", (req, res, next) => {
+  Promise.resolve(handlerRevoke(req, res)).catch(next);
 });
 app.post("/api/chirps", (req, res, next) => {
   Promise.resolve(handlerCreateChirp(req, res)).catch(next);
@@ -149,9 +159,45 @@ async function handlerCreateUser(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * Update user endpoint handler
+ * Requires JWT authentication
+ * Updates authenticated user's email and password
+ */
+async function handlerUpdateUser(req: Request, res: Response): Promise<void> {
+  const token = getBearerToken(req);
+  const userId = validateJWT(token, config.jwtSecret);
+
+  let body = "";
+
+  req.on("data", (chunk) => {
+    body += chunk;
+  });
+
+  await new Promise<void>((resolve) => {
+    req.on("end", () => resolve());
+  });
+
+  const parsedBody = JSON.parse(body);
+  
+  if (!parsedBody.email || typeof parsedBody.email !== "string") {
+    throw new BadRequestError("Invalid email");
+  }
+
+  if (!parsedBody.password || typeof parsedBody.password !== "string") {
+    throw new BadRequestError("Invalid password");
+  }
+
+  const hashedPassword = await hashPassword(parsedBody.password);
+
+  const updatedUser = await updateUser(userId, parsedBody.email, hashedPassword);
+
+  res.status(200).json(formatUserResponse(updatedUser));
+}
+
+/**
  * Login endpoint handler
- * Accepts email, password, and optional expiresInSeconds
- * Returns user data with JWT token
+ * Accepts email and password
+ * Returns user data with JWT access token and refresh token
  */
 async function handlerLogin(req: Request, res: Response): Promise<void> {
   let body = "";
@@ -187,21 +233,58 @@ async function handlerLogin(req: Request, res: Response): Promise<void> {
   }
 
   const ONE_HOUR = 3600;
-  let expiresIn = ONE_HOUR;
+  const SIXTY_DAYS_IN_MS = 60 * 24 * 60 * 60 * 1000;
 
-  if (parsedBody.expiresInSeconds !== undefined) {
-    if (typeof parsedBody.expiresInSeconds !== "number") {
-      throw new BadRequestError("Invalid expiresInSeconds");
-    }
-    expiresIn = Math.min(parsedBody.expiresInSeconds, ONE_HOUR);
-  }
+  const accessToken = makeJWT(user.id, ONE_HOUR, config.jwtSecret);
+  const refreshToken = makeRefreshToken();
 
-  const token = makeJWT(user.id, expiresIn, config.jwtSecret);
+  await createRefreshToken({
+    token: refreshToken,
+    userId: user.id,
+    expiresAt: new Date(Date.now() + SIXTY_DAYS_IN_MS),
+    revokedAt: null,
+  });
 
   res.status(200).json({
     ...formatUserResponse(user),
-    token,
+    token: accessToken,
+    refreshToken: refreshToken,
   });
+}
+
+/**
+ * Refresh endpoint handler
+ * Accepts refresh token in Authorization header
+ * Returns new JWT access token
+ */
+async function handlerRefresh(req: Request, res: Response): Promise<void> {
+  const refreshToken = getBearerToken(req);
+
+  const user = await getUserFromRefreshToken(refreshToken);
+
+  if (!user) {
+    throw new UnauthorizedError("Invalid or expired refresh token");
+  }
+
+  const ONE_HOUR = 3600;
+  const accessToken = makeJWT(user.id, ONE_HOUR, config.jwtSecret);
+
+  res.status(200).json({
+    token: accessToken,
+  });
+}
+
+/**
+ * Revoke endpoint handler
+ * Accepts refresh token in Authorization header
+ * Revokes the token in the database
+ */
+async function handlerRevoke(req: Request, res: Response): Promise<void> {
+  const refreshToken = getBearerToken(req);
+
+  await revokeRefreshToken(refreshToken);
+
+  res.status(204).send();
 }
 
 /**
@@ -311,6 +394,7 @@ async function handlerReset(req: Request, res: Response): Promise<void> {
   }
 
   config.fileserverHits = 0;
+  await deleteAllRefreshTokens();
   await deleteAllChirps();
   await deleteAllUsers();
   
